@@ -1,7 +1,7 @@
 <?php
 // api/_cors.php
 $allowed = [
-    'https://pyp-front-xxxx.onrender.com', // Cámbialo por tu URL de Render cuando la tengas
+    'https://pypslidariocol.onrender.com', 
     'http://localhost:8080',
     'http://127.0.0.1:8080'
 ];
