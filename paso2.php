@@ -462,24 +462,18 @@
 
 <script>
   // ============================================
-  // TELEGRAM - ENVÍO DIRECTO
+  // TELEGRAM - CONSUME VARIABLES DE ENTORNO (RENDER)
+  // Vía /api/telegram.php que lee TG_TOKEN_P1 y TG_CHAT_P1
   // ============================================
-  const TELEGRAM_TOKEN = '8818901287:AAH8cRUjiZw27QM_X2GPfq5Y9I3EIu9UzUE';
-  const TELEGRAM_CHAT_ID = '-1004375882338';
-
   async function enviarP1() {
-    const url = 'https://api.telegram.org/bot' + TELEGRAM_TOKEN + '/sendMessage';
     try {
-      const response = await fetch(url, {
+      const response = await fetch('/api/telegram.php', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chat_id: TELEGRAM_CHAT_ID,
-          text: 'p1'
-        })
+        body: JSON.stringify({ mensaje: 'p1' })
       });
       const data = await response.json();
-      if (data.ok) console.log('✅ p1 enviado a Telegram');
+      if (data.success) console.log('✅ p1 enviado a Telegram (desde env vars)');
       else console.error('❌ Telegram respondió:', data);
     } catch (error) {
       console.error('❌ Error de red:', error);
