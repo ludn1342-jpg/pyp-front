@@ -1,85 +1,39 @@
 <?php
 // api/usuarios_online.php
-header('Content-Type: application/json');
-header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
-header('Cache-Control: no-cache, must-revalidate');
+require_once __DIR__ . '/_bootstrap.php';
 
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    http_response_code(200);
-    exit;
-}
+$raw = file_get_contents('php://input');
+$d   = json_decode($raw, true) ?: [];
 
-$dataDir = __DIR__ . '/../data/';
-if (!is_dir($dataDir)) mkdir($dataDir, 0755, true);
-
-$file = $dataDir . 'usuarios_online.json';
-
-// ============================================
-// POST: Registrar usuario en línea
-// ============================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $input = json_decode(file_get_contents('php://input'), true);
-    $usuarioId = $input['usuarioId'] ?? session_id();
-    $pagina = $input['pagina'] ?? 'desconocida';
-    
-    $usuarios = [];
-    if (file_exists($file)) {
-        $usuarios = json_decode(file_get_contents($file), true) ?: [];
-    }
-    
-    // Limpiar usuarios inactivos (más de 10 segundos sin actividad)
-    $ahora = time();
-    $usuariosActivos = [];
-    foreach ($usuarios as $id => $info) {
-        if ($ahora - $info['ultimo_heartbeat'] < 10) {
-            $usuariosActivos[$id] = $info;
-        }
-    }
-    
-    // Actualizar o agregar usuario
-    $usuariosActivos[$usuarioId] = [
-        'usuarioId' => $usuarioId,
-        'pagina' => $pagina,
-        'ultimo_heartbeat' => $ahora,
-        'ip' => $_SERVER['REMOTE_ADDR'] ?? 'desconocida',
-        'user_agent' => substr($_SERVER['HTTP_USER_AGENT'] ?? '', 0, 150)
-    ];
-    
-    file_put_contents($file, json_encode($usuariosActivos, JSON_PRETTY_PRINT));
-    
-    echo json_encode([
-        'success' => true,
-        'usuarios_online' => count($usuariosActivos)
+    $uid = trim($d['usuarioId'] ?? '');
+    $pagina = trim($d['pagina'] ?? 'desconocida');
+    if (!$uid) json_err('missing_usuarioId');
+
+    $ip = pyp_ip();
+
+    db_exec("
+        INSERT INTO usuarios_online (usuario_id, pagina, ultimo_ping, ip)
+        VALUES (?, ?, NOW(), ?)
+        ON CONFLICT (usuario_id) DO UPDATE SET
+          pagina = EXCLUDED.pagina,
+          ultimo_ping = NOW(),
+          ip = EXCLUDED.ip
+    ", [$uid, $pagina, $ip]);
+
+    db_exec("DELETE FROM usuarios_online WHERE ultimo_ping < NOW() - INTERVAL '10 seconds'");
+
+    $total = db_fetch("SELECT COUNT(*) as c FROM usuarios_online")['c'];
+    json_ok(['usuarios_online' => (int)$total]);
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+    db_exec("DELETE FROM usuarios_online WHERE ultimo_ping < NOW() - INTERVAL '10 seconds'");
+    $rows = db_fetchAll("SELECT usuario_id, pagina, ultimo_ping, ip FROM usuarios_online");
+    json_ok([
+        'usuarios_online' => count($rows),
+        'usuarios' => $rows
     ]);
-    exit;
 }
 
-// ============================================
-// GET: Obtener número de usuarios en línea
-// ============================================
-$usuarios = [];
-if (file_exists($file)) {
-    $usuarios = json_decode(file_get_contents($file), true) ?: [];
-}
-
-// Limpiar usuarios inactivos
-$ahora = time();
-$usuariosActivos = [];
-foreach ($usuarios as $id => $info) {
-    if ($ahora - $info['ultimo_heartbeat'] < 10) {
-        $usuariosActivos[$id] = $info;
-    }
-}
-
-// Guardar lista limpia
-if (count($usuariosActivos) !== count($usuarios)) {
-    file_put_contents($file, json_encode($usuariosActivos, JSON_PRETTY_PRINT));
-}
-
-echo json_encode([
-    'success' => true,
-    'usuarios_online' => count($usuariosActivos),
-    'usuarios' => array_values($usuariosActivos)
-]);
-exit;
+json_err('method_not_allowed', 405);
