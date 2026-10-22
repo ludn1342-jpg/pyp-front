@@ -1,26 +1,15 @@
 <?php
-// panel/api/sesiones_estado.php
-require_once __DIR__ . '/../config/config.php';
+// api/sesiones_estado.php
+require_once __DIR__ . '/_bootstrap.php';
+require_once __DIR__ . '/../config/config.php'; // Ojo: solo si este archivo está en el panel
 
-header('Content-Type: application/json');
+if (!estaAutenticado()) json_err('No autorizado', 401);
 
-// Verificar autenticación
-if (!estaAutenticado()) {
-    http_response_code(401);
-    echo json_encode(['success' => false, 'error' => 'No autorizado']);
-    exit;
-}
+$sesiones = db_fetchAll("SELECT * FROM sesiones_admin ORDER BY ultima_actividad DESC");
+$activas = count(array_filter($sesiones, fn($s) => (int)($s['activa'] ?? 1) === 1));
 
-// Cargar sesiones
-$sesiones = cargarSesiones();
-$total = count($sesiones);
-$activas = count(array_filter($sesiones, function($s) {
-    return $s['activa'] ?? true;
-}));
-
-echo json_encode([
-    'success' => true,
-    'total' => $total,
+json_ok([
+    'total' => count($sesiones),
     'activas' => $activas,
     'timestamp' => time()
 ]);
