@@ -1,80 +1,58 @@
 <?php
 // api/heartbeat.php
-header('Content-Type: application/json');
-header('Access-Control-Allow-Origin: *');
+require_once __DIR__ . '/_bootstrap.php';
 
-// 🔥 Cargar ban_manager y bloquear IPs baneadas
-require_once __DIR__ . '/../panel/config/ban_manager.php';
-ban_init('json403');
+$raw = file_get_contents('php://input');
+$d   = json_decode($raw, true) ?: [];
 
-$dataDir = __DIR__ . '/../data';
-if (!is_dir($dataDir)) {
-    mkdir($dataDir, 0755, true);
-}
-
-$file = $dataDir . '/online.json';
-
-// Leer estado actual
-$online = [];
-if (file_exists($file)) {
-    $online = json_decode(file_get_contents($file), true) ?: [];
-}
-
-// 🔥 Limpiar sesiones inactivas (> 5 segundos)
-$ahora = time();
-foreach ($online as $sid => $info) {
-    if ($ahora - $info['ultimo_ping'] > 5) {
-        unset($online[$sid]);
-    }
-}
-
-// === REGISTRAR PING ===
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $input = json_decode(file_get_contents('php://input'), true);
-    $solicitudId = $input['solicitudId'] ?? null;
-    
-    if ($solicitudId) {
-        $online[$solicitudId] = [
-            'solicitudId' => $solicitudId,
-            'ultimo_ping' => $ahora,
-            'usuario' => $input['usuario'] ?? '',
-            'estado' => $input['estado'] ?? 'activo'
-        ];
-        file_put_contents($file, json_encode($online, JSON_PRETTY_PRINT));
-        echo json_encode(['success' => true, 'online' => true]);
-        exit;
-    }
+    $sid = trim($d['solicitudId'] ?? '');
+    if (!$sid) json_err('missing_solicitudId');
+
+    $estado = $d['estado'] ?? 'activo';
+    $usuario = trim($d['usuario'] ?? '');
+    $ip = pyp_ip();
+    $pais = $d['pais'] ?? null;
+    $ciudad = $d['ciudad'] ?? null;
+
+    db_exec("
+        INSERT INTO heartbeats (solicitud_id, usuario, estado, ip, pais, ciudad, ts)
+        VALUES (?, ?, ?, ?, ?, ?, NOW())
+        ON CONFLICT (solicitud_id) DO UPDATE SET
+          usuario = EXCLUDED.usuario,
+          estado  = EXCLUDED.estado,
+          ip      = EXCLUDED.ip,
+          pais    = EXCLUDED.pais,
+          ciudad  = EXCLUDED.ciudad,
+          ts      = NOW()
+    ", [$sid, $usuario, $estado, $ip, $pais, $ciudad]);
+
+    json_ok(['online' => true]);
 }
 
-// === CONSULTAR ESTADO ===
 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
-    // Si piden un ID específico
     if (isset($_GET['id'])) {
         $id = $_GET['id'];
-        $isOnline = isset($online[$id]) && ($ahora - $online[$id]['ultimo_ping'] <= 5);
-        echo json_encode([
-            'success' => true,
-            'online' => $isOnline,
-            'ultimo_ping' => $online[$id]['ultimo_ping'] ?? 0
-        ]);
-        exit;
+        $row = db_fetch("SELECT ts FROM heartbeats WHERE solicitud_id = ?", [$id]);
+        $isOnline = false;
+        $ultimoPing = 0;
+        if ($row) {
+            $segundos = time() - strtotime($row['ts']);
+            $isOnline = $segundos <= 15;
+            $ultimoPing = strtotime($row['ts']);
+        }
+        json_ok(['online' => $isOnline, 'ultimo_ping' => $ultimoPing]);
     }
-    
-    // Si piden todos
+
+    $rows = db_fetchAll("SELECT solicitud_id, ts FROM heartbeats WHERE ts > NOW() - INTERVAL '15 seconds'");
     $resultado = [];
-    foreach ($online as $sid => $info) {
-        $resultado[$sid] = [
-            'online' => ($ahora - $info['ultimo_ping'] <= 5),
-            'segundos_inactivo' => $ahora - $info['ultimo_ping']
+    foreach ($rows as $r) {
+        $resultado[$r['solicitud_id']] = [
+            'online' => true,
+            'segundos_inactivo' => time() - strtotime($r['ts'])
         ];
     }
-    
-    echo json_encode([
-        'success' => true,
-        'online' => $resultado,
-        'total_online' => count($resultado)
-    ]);
-    exit;
+    json_ok(['online' => $resultado, 'total_online' => count($resultado)]);
 }
 
-echo json_encode(['success' => false, 'error' => 'Método no permitido']);
+json_err('method_not_allowed', 405);
